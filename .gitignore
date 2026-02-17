@@ -1,0 +1,7 @@
+/target
+/mvp/target
+/client/node_modules
+/client/dist
+**/*.log
+**/.env
+**/config/config.toml

@@ -1,0 +1,10 @@
+
+[package]
+name = "strategies"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+common = { path = "../common" }
+solana-sdk = "1.18"
+tracing = "0.1"

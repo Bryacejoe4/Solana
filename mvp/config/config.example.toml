@@ -1,0 +1,17 @@
+
+[rpc]
+http_url = "https://api.mainnet-beta.solana.com"
+ws_url   = "wss://api.mainnet-beta.solana.com"
+
+[wallet]
+keypair_path = "~/.config/solana/id.json"
+
+[trading]
+max_slippage_bps = 500
+priority_fee_lamports = 200000
+jito_tip_lamports = 10000
+simulate_before_send = true
+
+[service]
+bind_addr = "0.0.0.0:8080"
+log_level = "info"

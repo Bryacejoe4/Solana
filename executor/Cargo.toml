@@ -1,0 +1,13 @@
+[package]
+name = "executor"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+solana-sdk = "1.18"
+solana-client = "1.18"
+tracing = "0.1"
+shellexpand = "3"
+common = { path = "../common" }
+mev = { path = "../mev" }
