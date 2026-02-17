@@ -1,0 +1,23 @@
+{
+    "name": "solana-sniper-bot",
+    "version": "1.0.0",
+    "description": "High-performance Solana sniping bot",
+    "main": "src/index.ts",
+    "scripts": {
+        "build": "tsc",
+        "start": "ts-node src/index.ts"
+    },
+    "dependencies": {
+        "@solana/web3.js": "^1.91.0",
+        "jito-ts": "^2.2.0",
+        "dotenv": "^16.4.5",
+        "bs58": "^5.0.0",
+        "axios": "^1.6.0",
+        "@triton-one/yellowstone-grpc": "^1.4.0"
+    },
+    "devDependencies": {
+        "typescript": "^5.0.0",
+        "@types/node": "^20.0.0",
+        "ts-node": "^10.9.0"
+    }
+}
