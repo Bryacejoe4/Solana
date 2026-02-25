@@ -1,4 +1,5 @@
 import { Connection, Keypair, PublicKey, LAMPORTS_PER_SOL, TransactionInstruction } from '@solana/web3.js';
+import { createAssociatedTokenAccountIdempotentInstruction } from '@solana/spl-token';
 import { ConnectionManager } from './engine/connection';
 import { JitoClient } from './engine/jito';
 import { TransactionBuilder } from './engine/transaction';
@@ -204,8 +205,15 @@ async function buyToken(connection: Connection, wallet: Keypair, jito: JitoClien
             maxSolCost
         );
 
+        const createAtaIx = createAssociatedTokenAccountIdempotentInstruction(
+            wallet.publicKey,
+            userATA,
+            wallet.publicKey,
+            mint
+        );
+
         console.log(`Buying ${amountSol} SOL of ${mint.toBase58()}...`);
-        await executeTransaction(connection, wallet, jito, [ix]);
+        await executeTransaction(connection, wallet, jito, [createAtaIx, ix]);
 
         // Track Position with High Precision
         let estimatedTokens = BigInt(0);
@@ -297,7 +305,6 @@ async function executeTransaction(connection: Connection, wallet: Keypair, jito:
 
         // 3. Dispatch to Sender
         const useHelius = process.env.HELIUS_SENDER_ENABLED === 'true';
-        const useJito = process.env.JITO_ENABLED === 'true';
 
         if (useHelius) {
             console.log("Using Helius Smart Sender...");

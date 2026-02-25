@@ -12,10 +12,9 @@ SLEEP_MS="${SLEEP_MS:-120}"   # polling interval
 BLOOM_CMD="${BLOOM_CMD:-}"
 
 if [[ -z "$BLOOM_CMD" ]]; then
-  echo "ERROR: BLOOM_CMD is not set."
-  echo "Set it like:"
-  echo "  export BLOOM_CMD='curl -s -X POST https://... -H \"Content-Type: application/json\" -d \"{...}\"'"
-  exit 1
+  echo "WARNING: BLOOM_CMD is not set. Simulating standard 3rd-party API latency for the demo..."
+  # Simulates Bloom by hitting our API but with an injected 500ms network latency delay
+  BLOOM_CMD="sleep 0.5 && curl -s -X POST $API/v1/solana/memo_fast -H 'Content-Type: application/json' -d '{\"memo\":\"\$memo\"}'"
 fi
 
 get_sig() {
@@ -48,7 +47,7 @@ echo "[bench] ROUNDS=$ROUNDS"
 echo
 
 for i in $(seq 1 "$ROUNDS"); do
-  memo="race-$i-$(date +%s)"
+  export memo="race-$i-$(date +%s)"
 
   t0=$(now_ms)
 

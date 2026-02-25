@@ -2,3 +2,10 @@
 [workspace]
 resolver = "2"
 members = ["api", "common", "executor", "strategies", "mev"]
+
+[profile.release]
+opt-level = "z"        # Optimize for size
+lto = true             # Enable Link Time Optimization
+codegen-units = 1      # Reduce parallel units for better optimization
+panic = "abort"       # Reduce binary size by removing stack unwinding
+strip = true           # Strip symbols from the binary

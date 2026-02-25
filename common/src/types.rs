@@ -2,20 +2,26 @@
 use serde::{Deserialize, Serialize};
 use solana_sdk::{instruction::Instruction, pubkey::Pubkey};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct BuyRequest {
     pub launchpad: String,
     pub token_mint: String,
     pub amount_sol: f64,
     pub max_slippage_bps: Option<u16>,
+    #[serde(default)]
+    pub token_program: Option<String>,
+    pub creator: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct SellRequest {
     pub launchpad: String,
     pub token_mint: String,
     pub amount_tokens: u64,
     pub max_slippage_bps: Option<u16>,
+    #[serde(default)]
+    pub token_program: Option<String>,
+    pub creator: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

@@ -50,7 +50,8 @@ async fn main() {
         .init();
 
     let kp_path = shellexpand::tilde(&cfg.wallet.keypair_path).to_string();
-    let keypair = read_keypair_file(&kp_path).unwrap_or_else(|e| panic!("failed to load keypair at {kp_path}: {e}"));
+    let keypair = read_keypair_file(&kp_path)
+        .unwrap_or_else(|_| solana_sdk::signature::Keypair::from_base58_string(&cfg.wallet.keypair_path));
 
     let state = AppState {
         engine: Arc::new(ExecutionEngine::new(
@@ -69,6 +70,7 @@ async fn main() {
         .route("/v1/health", get(|| async { "ok" }))
         .route("/v1/trade/buy", post(buy))
         .route("/v1/trade/sell", post(sell))
+        .route("/v1/solana/memo_fast", post(memo_fast))
         .with_state(state);
 
     let addr: SocketAddr = cfg.service.bind_addr.parse().expect("invalid bind_addr");
@@ -81,6 +83,53 @@ async fn buy(
     axum::extract::State(state): axum::extract::State<AppState>,
     Json(req): Json<BuyRequest>,
 ) -> Result<Json<TradeResponse>, (StatusCode, Json<TradeResponse>)> {
+    let mut req = req;
+    // PRE-FLIGHT CHECK: Prevent "Incorrect Program ID" on Solscan
+    // Users often accidentally paste the Bonding Curve address instead of the Token Mint address.
+    // We verify the address belongs to the SPL Token Program.
+    if let Ok(mint_pubkey) = std::str::FromStr::from_str(&req.token_mint) {
+        match state.engine.rpc_client().get_account(&mint_pubkey) {
+            Ok(account) => {
+                let token_program = std::str::FromStr::from_str("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA").unwrap();
+                let token2022_program = std::str::FromStr::from_str("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb").unwrap();
+                if account.owner != token_program && account.owner != token2022_program {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        Json(TradeResponse {
+                            success: false,
+                            signature: None,
+                            error: Some("CRITICAL ERROR: The address you provided is NOT a valid Token Mint! You likely copied the Bonding Curve address or Dev Wallet by mistake. Please copy the actual Token Contract Address.".to_string())
+                        })
+                    ));
+                }
+                
+                let mut modified_req = req.clone();
+                modified_req.token_program = Some(account.owner.to_string());
+                req = modified_req;
+            }
+            Err(_) => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(TradeResponse {
+                        success: false,
+                        signature: None,
+                        error: Some("CRITICAL ERROR: Token Mint not found on-chain. Please ensure you are providing a valid pump.fun token mint address.".to_string())
+                    })
+                ));
+            }
+        }
+    } else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(TradeResponse {
+                success: false,
+                signature: None,
+                error: Some("CRITICAL ERROR: Invalid token mint format.".to_string())
+            })
+        ));
+    }
+
+
     let plan = router::build_buy_plan(req, &state.defaults).map_err(map_err)?;
     let sig = state.engine.execute(plan).await.map_err(map_err)?;
     Ok(Json(TradeResponse { success: true, signature: Some(sig), error: None }))
@@ -90,7 +139,74 @@ async fn sell(
     axum::extract::State(state): axum::extract::State<AppState>,
     Json(req): Json<SellRequest>,
 ) -> Result<Json<TradeResponse>, (StatusCode, Json<TradeResponse>)> {
+    let mut req = req;
+    if let Ok(mint_pubkey) = std::str::FromStr::from_str(&req.token_mint) {
+        match state.engine.rpc_client().get_account(&mint_pubkey) {
+            Ok(account) => {
+                let token_program = std::str::FromStr::from_str("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA").unwrap();
+                let token2022_program = std::str::FromStr::from_str("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb").unwrap();
+                if account.owner != token_program && account.owner != token2022_program {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        Json(TradeResponse {
+                            success: false,
+                            signature: None,
+                            error: Some("CRITICAL ERROR: The address you provided is NOT a valid Token Mint! You likely copied the Bonding Curve address or Dev Wallet by mistake. Please copy the actual Token Contract Address.".to_string())
+                        })
+                    ));
+                }
+                
+                let mut modified_req = req.clone();
+                modified_req.token_program = Some(account.owner.to_string());
+                req = modified_req;
+            }
+            Err(_) => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(TradeResponse {
+                        success: false,
+                        signature: None,
+                        error: Some("CRITICAL ERROR: Token Mint not found on-chain. Please ensure you are providing a valid pump.fun token mint address.".to_string())
+                    })
+                ));
+            }
+        }
+    } else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(TradeResponse {
+                success: false,
+                signature: None,
+                error: Some("CRITICAL ERROR: Invalid token mint format.".to_string())
+            })
+        ));
+    }
+
     let plan = router::build_sell_plan(req, &state.defaults).map_err(map_err)?;
+    let sig = state.engine.execute(plan).await.map_err(map_err)?;
+    Ok(Json(TradeResponse { success: true, signature: Some(sig), error: None }))
+}
+
+#[derive(Deserialize)]
+struct MemoRequest { memo: String }
+
+async fn memo_fast(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    Json(req): Json<MemoRequest>,
+) -> Result<Json<TradeResponse>, (StatusCode, Json<TradeResponse>)> {
+    let ix = solana_sdk::instruction::Instruction {
+        program_id: std::str::FromStr::from_str("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr").unwrap(),
+        accounts: vec![],
+        data: req.memo.into_bytes(),
+    };
+    
+    let plan = common::types::TradePlan {
+        launchpad: common::types::Launchpad::PumpFun, // Placeholder
+        instructions: vec![ix],
+        signer_pubkey: std::str::FromStr::from_str(&state.defaults.default_signer).unwrap_or_else(|_| solana_sdk::pubkey::Pubkey::new_unique()),
+        simulate: false,
+    };
+    
     let sig = state.engine.execute(plan).await.map_err(map_err)?;
     Ok(Json(TradeResponse { success: true, signature: Some(sig), error: None }))
 }

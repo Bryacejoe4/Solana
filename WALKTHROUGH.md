@@ -147,7 +147,7 @@ To deliver this to your client via GitHub, follow these exact steps:
     ```bash
     git add .
     git commit -m "feat: implement high-performance rust execution engine v1 (Phase 1)"
-    git push origin main
+    git push origin main --force
     ```
 
 3.  **Client Running Instructions (The instructions you give to him)**:

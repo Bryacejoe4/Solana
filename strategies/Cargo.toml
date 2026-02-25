@@ -8,3 +8,4 @@ edition = "2021"
 common = { path = "../common" }
 solana-sdk = "1.18"
 tracing = "0.1"
+spl-associated-token-account = "3.0"

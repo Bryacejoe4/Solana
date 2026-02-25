@@ -28,7 +28,7 @@ export class PumpFunStrategy {
         return new TransactionInstruction({
             programId: PUMP_FUN_PROGRAM_ID,
             keys: [
-                { pubkey: new PublicKey("4wTV1YmiEkRvAtNtsSGPtUrqefndJP1KAk8bJqDRxryf"), isSigner: false, isWritable: false }, // global
+                { pubkey: new PublicKey("4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf"), isSigner: false, isWritable: false }, // global
                 { pubkey: new PublicKey("CebN5WGQ4jvEPvsVU4EoHEPGzq1VV7AbicfcvWiyZn4U"), isSigner: false, isWritable: true }, // fee recipient
                 { pubkey: mint, isSigner: false, isWritable: false },
                 { pubkey: bondingCurve, isSigner: false, isWritable: true },
@@ -36,7 +36,7 @@ export class PumpFunStrategy {
                 { pubkey: associatedUserAccount, isSigner: false, isWritable: true },
                 { pubkey: buyer, isSigner: true, isWritable: true },
                 { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-                { pubkey: new PublicKey("CcVNgwKGFF4B7qAg4pXYQ2p1P9y4XjQ0pJb00000000"), isSigner: false, isWritable: false }, // token program
+                { pubkey: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"), isSigner: false, isWritable: false }, // token program
                 { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false },
                 { pubkey: new PublicKey("Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjj46Pu5y4382"), isSigner: false, isWritable: false }, // event authority
                 { pubkey: PUMP_FUN_PROGRAM_ID, isSigner: false, isWritable: false }, // program
@@ -63,7 +63,7 @@ export class PumpFunStrategy {
         return new TransactionInstruction({
             programId: PUMP_FUN_PROGRAM_ID,
             keys: [
-                { pubkey: new PublicKey("4wTV1YmiEkRvAtNtsSGPtUrqefndJP1KAk8bJqDRxryf"), isSigner: false, isWritable: false }, // global
+                { pubkey: new PublicKey("4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf"), isSigner: false, isWritable: false }, // global
                 { pubkey: new PublicKey("CebN5WGQ4jvEPvsVU4EoHEPGzq1VV7AbicfcvWiyZn4U"), isSigner: false, isWritable: true }, // fee recipient
                 { pubkey: mint, isSigner: false, isWritable: false },
                 { pubkey: bondingCurve, isSigner: false, isWritable: true },
@@ -71,7 +71,7 @@ export class PumpFunStrategy {
                 { pubkey: associatedUserAccount, isSigner: false, isWritable: true },
                 { pubkey: seller, isSigner: true, isWritable: true },
                 { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-                { pubkey: new PublicKey("CcVNgwKGFF4B7qAg4pXYQ2p1P9y4XjQ0pJb00000000"), isSigner: false, isWritable: false }, // token program
+                { pubkey: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"), isSigner: false, isWritable: false }, // token program
                 { pubkey: new PublicKey("Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjj46Pu5y4382"), isSigner: false, isWritable: false }, // event authority
                 { pubkey: PUMP_FUN_PROGRAM_ID, isSigner: false, isWritable: false }, // program
             ],
