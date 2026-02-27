@@ -1,24 +1,55 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Load environment if present (relative to script location)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$SCRIPT_DIR/.env.bench" ]]; then
+  # shellcheck disable=SC1091
+  source "$SCRIPT_DIR/.env.bench"
+fi
+
 API="${API:-http://127.0.0.1:8080}"
 RPC="${RPC:-https://api.mainnet-beta.solana.com}"
 ROUNDS="${ROUNDS:-10}"
-SLEEP_MS="${SLEEP_MS:-120}"   # polling interval
+SLEEP_MS="${SLEEP_MS:-120}"
 
-# You MUST set BLOOM_CMD to a command that prints JSON containing a "signature" field.
-# Example:
-# export BLOOM_CMD='curl -s -X POST https://bloom... -H "Content-Type: application/json" -d "{\"memo\":\"race\"}"'
-BLOOM_CMD="${BLOOM_CMD:-}"
+BLOOM_AUTH_TOKEN="${BLOOM_AUTH_TOKEN:-}"
+BLOOM_WALLET_ADDRESS="${BLOOM_WALLET_ADDRESS:-}"
+BLOOM_URL="${BLOOM_URL:-https://us1.bloom-ext.app/api/extension-swap}"
 
-if [[ -z "$BLOOM_CMD" ]]; then
-  echo "WARNING: BLOOM_CMD is not set. Simulating standard 3rd-party API latency for the demo..."
-  # Simulates Bloom by hitting our API but with an injected 500ms network latency delay
-  BLOOM_CMD="sleep 0.5 && curl -s -X POST $API/v1/solana/memo_fast -H 'Content-Type: application/json' -d '{\"memo\":\"\$memo\"}'"
-fi
+# ---------- Bloom helper function ----------
+# Uses a proper function to avoid all shell escaping issues
+bloom_buy() {
+  local mint="$1"
+  local payload
+  payload=$(cat <<EOF
+{
+  "id": "QT-${RANDOM}${RANDOM}-bench",
+  "auth_token": "${BLOOM_AUTH_TOKEN}",
+  "address": "${mint}",
+  "amount": 0.01,
+  "priority_fee": 0.002,
+  "processor_tip": 0.01,
+  "slippage": 40,
+  "side": "Buy",
+  "skip_if_bought": false,
+  "anti_mev": true,
+  "auto_tip": false,
+  "dev_sell": null,
+  "min_liquidity": 3000,
+  "max_market_cap": 10000000,
+  "amount_type": "exact_in",
+  "wallets": [{"address": "${BLOOM_WALLET_ADDRESS}", "label": "W1"}]
+}
+EOF
+  )
+  curl -s -X POST "${BLOOM_URL}" \
+    -H "Content-Type: application/json" \
+    -d "${payload}"
+}
 
+# ---------- helpers ----------
 get_sig() {
-  # Extract `"signature":"..."` from JSON (no jq dependency)
   sed -n 's/.*"signature"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'
 }
 
@@ -31,12 +62,27 @@ sig_status() {
 }
 
 is_confirmed() {
-  # returns 0 if confirmed/finalized, else 1
   local json="$1"
   echo "$json" | grep -q '"confirmationStatus":"confirmed"\|"confirmationStatus":"finalized"'
 }
 
 now_ms() { date +%s%3N; }
+
+# ---------- pre-flight ----------
+USE_BLOOM_API=false
+if [[ -n "$BLOOM_AUTH_TOKEN" && -n "$BLOOM_WALLET_ADDRESS" ]]; then
+  USE_BLOOM_API=true
+  echo "[bench] Using official Bloom API (${BLOOM_URL})"
+  echo "[bench] Warming up Bloom connection..."
+  bloom_buy "11111111111111111111111111111111" > /dev/null 2>&1 || true
+  sleep 1
+else
+  echo "WARNING: BLOOM_AUTH_TOKEN or BLOOM_WALLET_ADDRESS not set."
+  echo "Simulating Bloom with 500ms latency..."
+fi
+
+# Use a real pump.fun token for the race
+RACE_MINT="${RACE_MINT:-7EYnhQoR9YM3N7ebhc9ndS21ST6f67shf89A9f2S1Lp}"
 
 wins_api=0
 wins_bloom=0
@@ -44,25 +90,33 @@ wins_bloom=0
 echo "[bench] API=$API"
 echo "[bench] RPC=$RPC"
 echo "[bench] ROUNDS=$ROUNDS"
+echo "[bench] MINT=$RACE_MINT"
 echo
 
 for i in $(seq 1 "$ROUNDS"); do
-  export memo="race-$i-$(date +%s)"
-
+  memo="race-$i-$(date +%s)"
   t0=$(now_ms)
 
-  # Fire API and Bloom in parallel and capture output
   api_out_file="$(mktemp)"
   bloom_out_file="$(mktemp)"
 
+  # Fire API
   (
     curl -s -X POST "$API/v1/solana/memo_fast" \
       -H "Content-Type: application/json" \
       -d "{\"memo\":\"$memo\"}" > "$api_out_file"
   ) &
 
+  # Fire Bloom (or simulation)
   (
-    bash -lc "$BLOOM_CMD" > "$bloom_out_file"
+    if $USE_BLOOM_API; then
+      bloom_buy "$RACE_MINT" > "$bloom_out_file" 2>&1
+    else
+      sleep 0.5
+      curl -s -X POST "$API/v1/solana/memo_fast" \
+        -H "Content-Type: application/json" \
+        -d "{\"memo\":\"bloom-$memo\"}" > "$bloom_out_file"
+    fi
   ) &
 
   wait
@@ -71,14 +125,18 @@ for i in $(seq 1 "$ROUNDS"); do
   bloom_sig="$(cat "$bloom_out_file" | get_sig || true)"
 
   if [[ -z "$api_sig" ]]; then
-    echo "[$i] API did not return signature. Output:"
+    echo "[$i] API failure! Response:"
     cat "$api_out_file"; echo
-    continue
   fi
 
   if [[ -z "$bloom_sig" ]]; then
-    echo "[$i] BLOOM did not return signature. Output:"
+    echo "[$i] BLOOM failure! Response:"
     cat "$bloom_out_file"; echo
+  fi
+
+  if [[ -z "$api_sig" || -z "$bloom_sig" ]]; then
+    echo "[$i] Skipping."
+    echo
     continue
   fi
 
@@ -95,8 +153,6 @@ for i in $(seq 1 "$ROUNDS"); do
       js="$(sig_status "$bloom_sig")"
       if is_confirmed "$js"; then bloom_t=$(now_ms); fi
     fi
-
-    # sleep in ms (works on GNU sleep with seconds; fallback)
     python3 - <<PY >/dev/null 2>&1 || sleep 0.12
 import time; time.sleep(${SLEEP_MS}/1000)
 PY

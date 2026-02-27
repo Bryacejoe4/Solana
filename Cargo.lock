@@ -142,6 +142,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shellexpand",
+ "solana-client",
  "solana-sdk",
  "strategies",
  "tokio",

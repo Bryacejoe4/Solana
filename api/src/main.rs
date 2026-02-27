@@ -6,8 +6,37 @@ use executor::engine::ExecutionEngine;
 use strategies::router::{self, TradeDefaults};
 use serde::Deserialize;
 use std::{net::SocketAddr, sync::Arc};
-use solana_sdk::signature::{read_keypair_file, Signer};
+use solana_sdk::{pubkey::Pubkey, signature::{read_keypair_file, Signer}};
 use tracing_subscriber::EnvFilter;
+
+/// Offset in the bonding-curve account data where the 32-byte creator pubkey lives.
+/// Layout (after 8-byte Anchor discriminator):
+///   5 × u64 fields (40 bytes) + 1 bool (1 byte) = 49 bytes before creator.
+const BONDING_CURVE_CREATOR_OFFSET: usize = 49;
+
+/// Derive the bonding-curve PDA for a given mint.
+fn bonding_curve_pda(mint: &Pubkey) -> Pubkey {
+    let program_id: Pubkey = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P".parse().unwrap();
+    Pubkey::find_program_address(&[b"bonding-curve", mint.as_ref()], &program_id).0
+}
+
+/// Fetch the creator pubkey from the bonding curve account data.
+fn fetch_creator_from_bonding_curve(
+    rpc: &solana_client::rpc_client::RpcClient,
+    mint: &Pubkey,
+) -> Option<String> {
+    let bc_pda = bonding_curve_pda(mint);
+    let account = rpc.get_account(&bc_pda).ok()?;
+    let data = account.data;
+    // Need at least offset + 32 bytes
+    if data.len() < BONDING_CURVE_CREATOR_OFFSET + 32 {
+        return None;
+    }
+    let creator_bytes: [u8; 32] = data[BONDING_CURVE_CREATOR_OFFSET..BONDING_CURVE_CREATOR_OFFSET + 32]
+        .try_into()
+        .ok()?;
+    Some(Pubkey::from(creator_bytes).to_string())
+}
 
 #[derive(Clone)]
 struct AppState {
@@ -104,7 +133,16 @@ async fn buy(
                 }
                 
                 let mut modified_req = req.clone();
+                // Auto-detect correct token program (SPL vs Token-2022)
                 modified_req.token_program = Some(account.owner.to_string());
+                // Auto-fetch the creator from the bonding curve so creator_vault PDA is correct
+                if modified_req.creator.is_none() {
+                    if let Ok(mint_pk) = req.token_mint.parse::<Pubkey>() {
+                        modified_req.creator = fetch_creator_from_bonding_curve(
+                            state.engine.rpc_client(), &mint_pk
+                        );
+                    }
+                }
                 req = modified_req;
             }
             Err(_) => {
@@ -157,7 +195,16 @@ async fn sell(
                 }
                 
                 let mut modified_req = req.clone();
+                // Auto-detect correct token program (SPL vs Token-2022)
                 modified_req.token_program = Some(account.owner.to_string());
+                // Auto-fetch the creator from the bonding curve so creator_vault PDA is correct
+                if modified_req.creator.is_none() {
+                    if let Ok(mint_pk) = req.token_mint.parse::<Pubkey>() {
+                        modified_req.creator = fetch_creator_from_bonding_curve(
+                            state.engine.rpc_client(), &mint_pk
+                        );
+                    }
+                }
                 req = modified_req;
             }
             Err(_) => {
