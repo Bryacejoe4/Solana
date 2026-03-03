@@ -1,3 +1,9 @@
+/// NextBlock MEV provider.
+///
+/// NextBlock uses a similar JSON-RPC bundle API to Jito.
+/// Endpoint: https://fra.nextblock.io (or region-specific)
+/// Method: `sendBundle` with base58-encoded serialized transactions.
+
 use crate::MevProvider;
 use async_trait::async_trait;
 use solana_sdk::transaction::Transaction;
@@ -6,16 +12,18 @@ use serde_json::{json, Value};
 use tracing::{info, error};
 use std::time::Duration;
 
-pub struct JitoClient {
+pub struct NextBlockClient {
     client: Client,
-    block_engine_url: String,
+    endpoint_url: String,
+    api_key: Option<String>,
 }
 
-impl JitoClient {
-    pub fn new(url: &str) -> Self {
+impl NextBlockClient {
+    pub fn new(url: &str, api_key: Option<String>) -> Self {
         Self {
             client: Client::builder().timeout(Duration::from_millis(2000)).build().unwrap(),
-            block_engine_url: url.to_string(),
+            endpoint_url: url.to_string(),
+            api_key,
         }
     }
 
@@ -27,7 +35,7 @@ impl JitoClient {
 }
 
 #[async_trait]
-impl MevProvider for JitoClient {
+impl MevProvider for NextBlockClient {
     async fn submit_bundle(&self, txs: Vec<Transaction>) -> Result<String, String> {
         let encoded_txs = Self::encode_txs(&txs);
 
@@ -38,37 +46,43 @@ impl MevProvider for JitoClient {
             "params": [encoded_txs]
         });
 
-        info!("Sending bundle with {} txs to Jito ({})", txs.len(), self.block_engine_url);
+        info!("Sending bundle with {} txs to NextBlock ({})", txs.len(), self.endpoint_url);
 
-        let resp = self.client.post(&self.block_engine_url)
-            .json(&payload)
+        let mut request = self.client.post(&self.endpoint_url).json(&payload);
+
+        // Add API key header if configured
+        if let Some(ref key) = self.api_key {
+            request = request.header("Authorization", format!("Bearer {}", key));
+        }
+
+        let resp = request
             .send()
             .await
             .map_err(|e| {
-                error!("Jito request failed: {}", e);
-                format!("Jito request failed: {e}")
+                error!("NextBlock request failed: {}", e);
+                format!("NextBlock request failed: {e}")
             })?;
 
         let txt = resp.text().await.unwrap_or_default();
-        info!("Jito raw response: {}", txt);
+        info!("NextBlock raw response: {}", txt);
 
         let parsed: Value = serde_json::from_str(&txt)
-            .map_err(|e| format!("Jito returned invalid JSON: {e} — raw: {txt}"))?;
+            .map_err(|e| format!("NextBlock returned invalid JSON: {e} — raw: {txt}"))?;
 
         if let Some(err) = parsed.get("error") {
-            return Err(format!("Jito error: {}", err));
+            return Err(format!("NextBlock error: {}", err));
         }
 
         match parsed.get("result").and_then(|r| r.as_str()) {
             Some(bundle_id) => {
-                info!("Jito bundle accepted: {}", bundle_id);
+                info!("NextBlock bundle accepted: {}", bundle_id);
                 Ok(bundle_id.to_string())
             }
-            None => Err(format!("Jito response missing 'result': {txt}"))
+            None => Err(format!("NextBlock response missing 'result': {txt}"))
         }
     }
 
     fn name(&self) -> &str {
-        "Jito"
+        "NextBlock"
     }
 }

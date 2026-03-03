@@ -13,6 +13,12 @@ pub enum EngineError {
     BadRequest(String),
     #[error("not implemented: {0}")]
     NotImplemented(String),
+    #[error("transaction confirmed but failed: {0}")]
+    Confirmation(String),
+    #[error("confirmation timeout: {0}")]
+    Timeout(String),
+    #[error("trade cancelled: {0}")]
+    Cancelled(String),
 }
 
 pub type EngineResult<T> = Result<T, EngineError>;

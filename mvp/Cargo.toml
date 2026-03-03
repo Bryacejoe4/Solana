@@ -1,4 +1,0 @@
-
-[workspace]
-resolver = "2"
-members = ["api", "common", "executor", "strategies", "mev"]

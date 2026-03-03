@@ -5,6 +5,13 @@ version = "0.1.0"
 edition = "2021"
 default-run = "api"
 
+[[bin]]
+name = "api"
+path = "src/main.rs"
+
+[[bin]]
+name = "cli"
+path = "src/cli.rs"
 [dependencies]
 axum = "0.7"
 tokio = { version = "1", features = ["full"] }
@@ -20,4 +27,7 @@ solana-client = "1.18"
 
 common = { path = "../common" }
 executor = { path = "../executor" }
+mev = { path = "../mev" }
 strategies = { path = "../strategies" }
+dialoguer = "0.11"
+reqwest = { version = "0.11", features = ["json"] }

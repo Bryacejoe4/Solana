@@ -5,7 +5,7 @@ use solana_sdk::{
     pubkey::Pubkey,
     system_program,
 };
-use spl_associated_token_account::get_associated_token_address;
+use spl_associated_token_account::get_associated_token_address_with_program_id;
 use std::str::FromStr;
 
 // ─── Static Program Addresses ────────────────────────────────────────────────
@@ -108,11 +108,8 @@ pub fn build_buy_plan(req: BuyRequest, defaults: &crate::router::TradeDefaults) 
 
     // PDAs
     let bonding_curve          = bonding_curve_pda(&mint);
-    let assoc_bonding_curve    = get_associated_token_address(&bonding_curve, &mint);
-    let assoc_user             = get_associated_token_address(&signer, &mint);
-    let creator_vault          = creator_vault_pda(&creator);
-    let global_vol_acc         = global_volume_accumulator_pda();
-    let user_vol_acc           = user_volume_accumulator_pda(&signer);
+    let assoc_bonding_curve    = get_associated_token_address_with_program_id(&bonding_curve, &mint, &token_prog);
+    let assoc_user             = get_associated_token_address_with_program_id(&signer, &mint, &token_prog);
 
     // Instruction data: discriminator | token_amount (u64 LE) | max_sol_cost (u64 LE)
     let max_sol_lamports = (req.amount_sol * 1_000_000_000.0) as u64;
@@ -121,10 +118,10 @@ pub fn build_buy_plan(req: BuyRequest, defaults: &crate::router::TradeDefaults) 
     let max_sol_cost = max_sol_lamports
         .saturating_add(max_sol_lamports.saturating_mul(slippage as u64) / 10_000);
 
-    // Conservative token amount estimate: ask to buy 1_000_000 raw tokens (1 token with 6 decimals).
-    // In production you'd read the curve and compute the exact expected amount.
-    // The `max_sol_cost` is the real guard — if the curve charges more than that, it reverts.
-    let token_amount: u64 = 1_000_000;
+    // Use u64::MAX as token_amount — tells the pump.fun program "buy as many tokens
+    // as this SOL amount gets me". The max_sol_cost is the real guard that prevents
+    // overspending. This is what production bots (Bloom, BonkBot, etc.) use.
+    let token_amount: u64 = u64::MAX;
 
     let mut data = Vec::with_capacity(24);
     data.extend_from_slice(&BUY_DISCRIMINATOR);
@@ -143,12 +140,13 @@ pub fn build_buy_plan(req: BuyRequest, defaults: &crate::router::TradeDefaults) 
             AccountMeta::new(signer, true),                                                //  6 user (signer)
             AccountMeta::new_readonly(system_program::ID, false),                          //  7 systemProgram
             AccountMeta::new_readonly(token_prog, false),                                  //  8 tokenProgram
-            AccountMeta::new(creator_vault, false),                                        //  9 creatorVault
+            AccountMeta::new_readonly(solana_sdk::sysvar::rent::ID, false),                //  9 rent
             AccountMeta::new_readonly(Pubkey::from_str(EVENT_AUTHORITY).unwrap(), false),  // 10 eventAuthority
             AccountMeta::new_readonly(program_id, false),                                  // 11 program
-            AccountMeta::new(global_vol_acc, false),                                       // 12 globalVolumeAccumulator
-            AccountMeta::new(user_vol_acc, false),                                         // 13 userVolumeAccumulator
-            AccountMeta::new_readonly(Pubkey::from_str(FEE_CONFIG).unwrap(), false),       // 14 feeConfig
+            /* PumpFun does not require these accounts, or they were optional? We will include them just in case. But let's check length */
+            // AccountMeta::new(global_vol_acc, false),                                       // 12 globalVolumeAccumulator
+            // AccountMeta::new(user_vol_acc, false),                                         // 13 userVolumeAccumulator
+            // AccountMeta::new_readonly(Pubkey::from_str(FEE_CONFIG).unwrap(), false),       // 14 feeConfig
         ],
         data,
     };
@@ -181,18 +179,15 @@ pub fn build_sell_plan(req: SellRequest, defaults: &crate::router::TradeDefaults
         .map_err(|_| EngineError::Config("invalid default_signer in config".into()))?;
     let token_prog   = resolve_token_program(&req.token_program);
 
-    let creator = req.creator
+    let _creator = req.creator
         .as_deref()
         .and_then(|s| Pubkey::from_str(s).ok())
         .unwrap_or(system_program::ID);
 
     // PDAs
     let bonding_curve       = bonding_curve_pda(&mint);
-    let assoc_bonding_curve = get_associated_token_address(&bonding_curve, &mint);
-    let assoc_user          = get_associated_token_address(&signer, &mint);
-    let creator_vault       = creator_vault_pda(&creator);
-    let global_vol_acc      = global_volume_accumulator_pda();
-    let user_vol_acc        = user_volume_accumulator_pda(&signer);
+    let assoc_bonding_curve = get_associated_token_address_with_program_id(&bonding_curve, &mint, &token_prog);
+    let assoc_user          = get_associated_token_address_with_program_id(&signer, &mint, &token_prog);
 
     // Instruction data: discriminator | amount (u64 LE) | min_sol_output (u64 LE)
     let slippage = req.max_slippage_bps.unwrap_or(defaults.max_slippage_bps);
@@ -217,12 +212,12 @@ pub fn build_sell_plan(req: SellRequest, defaults: &crate::router::TradeDefaults
             AccountMeta::new(signer, true),                                                //  6 user (signer)
             AccountMeta::new_readonly(system_program::ID, false),                          //  7 systemProgram
             AccountMeta::new_readonly(token_prog, false),                                  //  8 tokenProgram
-            AccountMeta::new(creator_vault, false),                                        //  9 creatorVault
+            AccountMeta::new_readonly(solana_sdk::sysvar::rent::ID, false),                //  9 rent
             AccountMeta::new_readonly(Pubkey::from_str(EVENT_AUTHORITY).unwrap(), false),  // 10 eventAuthority
             AccountMeta::new_readonly(program_id, false),                                  // 11 program
-            AccountMeta::new(global_vol_acc, false),                                       // 12 globalVolumeAccumulator
-            AccountMeta::new(user_vol_acc, false),                                         // 13 userVolumeAccumulator
-            AccountMeta::new_readonly(Pubkey::from_str(FEE_CONFIG).unwrap(), false),       // 14 feeConfig
+            // AccountMeta::new(global_vol_acc, false),                                       // 12 globalVolumeAccumulator
+            // AccountMeta::new(user_vol_acc, false),                                         // 13 userVolumeAccumulator
+            // AccountMeta::new_readonly(Pubkey::from_str(FEE_CONFIG).unwrap(), false),       // 14 feeConfig
         ],
         data,
     };

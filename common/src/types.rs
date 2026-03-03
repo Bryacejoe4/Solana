@@ -2,7 +2,7 @@
 use serde::{Deserialize, Serialize};
 use solana_sdk::{instruction::Instruction, pubkey::Pubkey};
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BuyRequest {
     pub launchpad: String,
     pub token_mint: String,
@@ -13,7 +13,7 @@ pub struct BuyRequest {
     pub creator: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SellRequest {
     pub launchpad: String,
     pub token_mint: String,

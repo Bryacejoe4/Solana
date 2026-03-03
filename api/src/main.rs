@@ -4,31 +4,30 @@ use common::types::{BuyRequest, SellRequest, TradeResponse};
 use common::error::EngineError;
 use executor::engine::ExecutionEngine;
 use strategies::router::{self, TradeDefaults};
+use mev::{MevProvider, jito::JitoClient, nextblock::NextBlockClient, zeroblock::ZeroBlockClient};
+use mev::router::{MevRouter, MevStrategy};
 use serde::Deserialize;
 use std::{net::SocketAddr, sync::Arc};
 use solana_sdk::{pubkey::Pubkey, signature::{read_keypair_file, Signer}};
+use solana_client::nonblocking::rpc_client::RpcClient as AsyncRpcClient;
 use tracing_subscriber::EnvFilter;
+use tracing::info;
 
 /// Offset in the bonding-curve account data where the 32-byte creator pubkey lives.
-/// Layout (after 8-byte Anchor discriminator):
-///   5 × u64 fields (40 bytes) + 1 bool (1 byte) = 49 bytes before creator.
 const BONDING_CURVE_CREATOR_OFFSET: usize = 49;
 
-/// Derive the bonding-curve PDA for a given mint.
 fn bonding_curve_pda(mint: &Pubkey) -> Pubkey {
     let program_id: Pubkey = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P".parse().unwrap();
     Pubkey::find_program_address(&[b"bonding-curve", mint.as_ref()], &program_id).0
 }
 
-/// Fetch the creator pubkey from the bonding curve account data.
-fn fetch_creator_from_bonding_curve(
-    rpc: &solana_client::rpc_client::RpcClient,
+async fn fetch_creator_from_bonding_curve(
+    rpc: &AsyncRpcClient,
     mint: &Pubkey,
 ) -> Option<String> {
     let bc_pda = bonding_curve_pda(mint);
-    let account = rpc.get_account(&bc_pda).ok()?;
+    let account = rpc.get_account(&bc_pda).await.ok()?;
     let data = account.data;
-    // Need at least offset + 32 bytes
     if data.len() < BONDING_CURVE_CREATOR_OFFSET + 32 {
         return None;
     }
@@ -38,11 +37,31 @@ fn fetch_creator_from_bonding_curve(
     Some(Pubkey::from(creator_bytes).to_string())
 }
 
+async fn validate_mint(rpc: &AsyncRpcClient, mint_str: &str) -> Result<(Pubkey, String), String> {
+    let mint_pubkey: Pubkey = mint_str.parse()
+        .map_err(|_| "Invalid token mint format".to_string())?;
+
+    let account = rpc.get_account(&mint_pubkey).await
+        .map_err(|_| "Token Mint not found on-chain.".to_string())?;
+
+    let token_program: Pubkey = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA".parse().unwrap();
+    let token2022_program: Pubkey = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb".parse().unwrap();
+
+    if account.owner != token_program && account.owner != token2022_program {
+        return Err("The address is NOT a valid Token Mint!".to_string());
+    }
+
+    Ok((mint_pubkey, account.owner.to_string()))
+}
+
 #[derive(Clone)]
 struct AppState {
     engine: Arc<ExecutionEngine>,
     defaults: TradeDefaults,
+    rpc: Arc<AsyncRpcClient>,
 }
+
+// ── Config ───────────────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
 struct Config {
@@ -50,25 +69,118 @@ struct Config {
     wallet: WalletConfig,
     trading: TradingConfig,
     service: ServiceConfig,
+    #[serde(default)]
+    mev: MevConfig,
 }
 
 #[derive(Deserialize)]
 struct RpcConfig { 
     http_url: String,
+    #[serde(default)]
     jito_url: Option<String>,
 }
+
 #[derive(Deserialize)]
 struct WalletConfig { keypair_path: String }
+
 #[derive(Deserialize)]
 struct TradingConfig { max_slippage_bps: u16, simulate_before_send: bool }
+
 #[derive(Deserialize)]
 struct ServiceConfig { bind_addr: String, log_level: String }
+
+#[derive(Deserialize, Default)]
+struct MevConfig {
+    /// Which providers to enable: "jito", "nextblock", "zeroblock"
+    #[serde(default)]
+    providers: Vec<String>,
+    /// Routing strategy: "parallel" or "round_robin"
+    #[serde(default = "default_strategy")]
+    strategy: String,
+    /// NextBlock endpoint URL
+    #[serde(default)]
+    nextblock_url: Option<String>,
+    /// NextBlock API key
+    #[serde(default)]
+    nextblock_api_key: Option<String>,
+    /// 0block endpoint URL
+    #[serde(default)]
+    zeroblock_url: Option<String>,
+    /// 0block API key
+    #[serde(default)]
+    zeroblock_api_key: Option<String>,
+}
+
+fn default_strategy() -> String { "parallel".to_string() }
 
 fn load_config() -> Result<Config, String> {
     let path = "config/config.toml";
     let raw = std::fs::read_to_string(path).map_err(|e| format!("read {path}: {e}"))?;
     toml::from_str(&raw).map_err(|e| format!("parse {path}: {e}"))
 }
+
+/// Build MEV providers from config.
+fn build_mev_provider(cfg: &Config) -> Option<Arc<dyn MevProvider>> {
+    let mut providers: Vec<Arc<dyn MevProvider>> = Vec::new();
+
+    // If the old-style jito_url is set and no [mev] section, use Jito directly
+    if cfg.mev.providers.is_empty() {
+        if let Some(ref jito_url) = cfg.rpc.jito_url {
+            info!("Using Jito (legacy config) at {}", jito_url);
+            return Some(Arc::new(JitoClient::new(jito_url)));
+        }
+        return None;
+    }
+
+    for name in &cfg.mev.providers {
+        match name.to_lowercase().as_str() {
+            "jito" => {
+                if let Some(ref url) = cfg.rpc.jito_url {
+                    info!("Adding MEV provider: Jito at {}", url);
+                    providers.push(Arc::new(JitoClient::new(url)));
+                } else {
+                    tracing::warn!("Jito listed in [mev].providers but no jito_url configured");
+                }
+            }
+            "nextblock" => {
+                if let Some(ref url) = cfg.mev.nextblock_url {
+                    info!("Adding MEV provider: NextBlock at {}", url);
+                    providers.push(Arc::new(NextBlockClient::new(url, cfg.mev.nextblock_api_key.clone())));
+                } else {
+                    tracing::warn!("NextBlock listed in [mev].providers but no nextblock_url configured");
+                }
+            }
+            "zeroblock" | "0block" => {
+                if let Some(ref url) = cfg.mev.zeroblock_url {
+                    info!("Adding MEV provider: 0block at {}", url);
+                    providers.push(Arc::new(ZeroBlockClient::new(url, cfg.mev.zeroblock_api_key.clone())));
+                } else {
+                    tracing::warn!("0block listed in [mev].providers but no zeroblock_url configured");
+                }
+            }
+            other => {
+                tracing::warn!("Unknown MEV provider '{}', skipping", other);
+            }
+        }
+    }
+
+    if providers.is_empty() {
+        return None;
+    }
+
+    if providers.len() == 1 {
+        return Some(providers.into_iter().next().unwrap());
+    }
+
+    let strategy = match cfg.mev.strategy.to_lowercase().as_str() {
+        "round_robin" | "roundrobin" => MevStrategy::RoundRobin,
+        _ => MevStrategy::Parallel,
+    };
+
+    Some(Arc::new(MevRouter::new(providers, strategy)))
+}
+
+// ── Main ─────────────────────────────────────────────────────────────────────
 
 #[tokio::main]
 async fn main() {
@@ -82,23 +194,28 @@ async fn main() {
     let keypair = read_keypair_file(&kp_path)
         .unwrap_or_else(|_| solana_sdk::signature::Keypair::from_base58_string(&cfg.wallet.keypair_path));
 
+    let rpc = Arc::new(AsyncRpcClient::new(cfg.rpc.http_url.clone()));
+    let mev_provider = build_mev_provider(&cfg);
+
     let state = AppState {
         engine: Arc::new(ExecutionEngine::new(
             cfg.rpc.http_url.clone(), 
             cfg.wallet.keypair_path.clone(),
-            cfg.rpc.jito_url.clone()
+            mev_provider,
         )),
         defaults: TradeDefaults {
             max_slippage_bps: cfg.trading.max_slippage_bps,
             simulate_before_send: cfg.trading.simulate_before_send,
             default_signer: keypair.pubkey().to_string(),
         },
+        rpc,
     };
 
     let app = Router::new()
         .route("/v1/health", get(|| async { "ok" }))
         .route("/v1/trade/buy", post(buy))
         .route("/v1/trade/sell", post(sell))
+        .route("/v1/trade/cancel", post(cancel))
         .route("/v1/solana/memo_fast", post(memo_fast))
         .with_state(state);
 
@@ -108,66 +225,19 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
+// ── Handlers ─────────────────────────────────────────────────────────────────
+
 async fn buy(
     axum::extract::State(state): axum::extract::State<AppState>,
     Json(req): Json<BuyRequest>,
 ) -> Result<Json<TradeResponse>, (StatusCode, Json<TradeResponse>)> {
     let mut req = req;
-    // PRE-FLIGHT CHECK: Prevent "Incorrect Program ID" on Solscan
-    // Users often accidentally paste the Bonding Curve address instead of the Token Mint address.
-    // We verify the address belongs to the SPL Token Program.
-    if let Ok(mint_pubkey) = std::str::FromStr::from_str(&req.token_mint) {
-        match state.engine.rpc_client().get_account(&mint_pubkey) {
-            Ok(account) => {
-                let token_program = std::str::FromStr::from_str("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA").unwrap();
-                let token2022_program = std::str::FromStr::from_str("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb").unwrap();
-                if account.owner != token_program && account.owner != token2022_program {
-                    return Err((
-                        StatusCode::BAD_REQUEST,
-                        Json(TradeResponse {
-                            success: false,
-                            signature: None,
-                            error: Some("CRITICAL ERROR: The address you provided is NOT a valid Token Mint! You likely copied the Bonding Curve address or Dev Wallet by mistake. Please copy the actual Token Contract Address.".to_string())
-                        })
-                    ));
-                }
-                
-                let mut modified_req = req.clone();
-                // Auto-detect correct token program (SPL vs Token-2022)
-                modified_req.token_program = Some(account.owner.to_string());
-                // Auto-fetch the creator from the bonding curve so creator_vault PDA is correct
-                if modified_req.creator.is_none() {
-                    if let Ok(mint_pk) = req.token_mint.parse::<Pubkey>() {
-                        modified_req.creator = fetch_creator_from_bonding_curve(
-                            state.engine.rpc_client(), &mint_pk
-                        );
-                    }
-                }
-                req = modified_req;
-            }
-            Err(_) => {
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    Json(TradeResponse {
-                        success: false,
-                        signature: None,
-                        error: Some("CRITICAL ERROR: Token Mint not found on-chain. Please ensure you are providing a valid pump.fun token mint address.".to_string())
-                    })
-                ));
-            }
-        }
-    } else {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(TradeResponse {
-                success: false,
-                signature: None,
-                error: Some("CRITICAL ERROR: Invalid token mint format.".to_string())
-            })
-        ));
+    let (mint_pk, token_program) = validate_mint(&state.rpc, &req.token_mint).await
+        .map_err(|msg| bad_request(&msg))?;
+    req.token_program = Some(token_program);
+    if req.creator.is_none() {
+        req.creator = fetch_creator_from_bonding_curve(&state.rpc, &mint_pk).await;
     }
-
-
     let plan = router::build_buy_plan(req, &state.defaults).map_err(map_err)?;
     let sig = state.engine.execute(plan).await.map_err(map_err)?;
     Ok(Json(TradeResponse { success: true, signature: Some(sig), error: None }))
@@ -178,60 +248,33 @@ async fn sell(
     Json(req): Json<SellRequest>,
 ) -> Result<Json<TradeResponse>, (StatusCode, Json<TradeResponse>)> {
     let mut req = req;
-    if let Ok(mint_pubkey) = std::str::FromStr::from_str(&req.token_mint) {
-        match state.engine.rpc_client().get_account(&mint_pubkey) {
-            Ok(account) => {
-                let token_program = std::str::FromStr::from_str("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA").unwrap();
-                let token2022_program = std::str::FromStr::from_str("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb").unwrap();
-                if account.owner != token_program && account.owner != token2022_program {
-                    return Err((
-                        StatusCode::BAD_REQUEST,
-                        Json(TradeResponse {
-                            success: false,
-                            signature: None,
-                            error: Some("CRITICAL ERROR: The address you provided is NOT a valid Token Mint! You likely copied the Bonding Curve address or Dev Wallet by mistake. Please copy the actual Token Contract Address.".to_string())
-                        })
-                    ));
-                }
-                
-                let mut modified_req = req.clone();
-                // Auto-detect correct token program (SPL vs Token-2022)
-                modified_req.token_program = Some(account.owner.to_string());
-                // Auto-fetch the creator from the bonding curve so creator_vault PDA is correct
-                if modified_req.creator.is_none() {
-                    if let Ok(mint_pk) = req.token_mint.parse::<Pubkey>() {
-                        modified_req.creator = fetch_creator_from_bonding_curve(
-                            state.engine.rpc_client(), &mint_pk
-                        );
-                    }
-                }
-                req = modified_req;
-            }
-            Err(_) => {
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    Json(TradeResponse {
-                        success: false,
-                        signature: None,
-                        error: Some("CRITICAL ERROR: Token Mint not found on-chain. Please ensure you are providing a valid pump.fun token mint address.".to_string())
-                    })
-                ));
-            }
-        }
-    } else {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(TradeResponse {
-                success: false,
-                signature: None,
-                error: Some("CRITICAL ERROR: Invalid token mint format.".to_string())
-            })
-        ));
+    let (mint_pk, token_program) = validate_mint(&state.rpc, &req.token_mint).await
+        .map_err(|msg| bad_request(&msg))?;
+    req.token_program = Some(token_program);
+    if req.creator.is_none() {
+        req.creator = fetch_creator_from_bonding_curve(&state.rpc, &mint_pk).await;
     }
-
     let plan = router::build_sell_plan(req, &state.defaults).map_err(map_err)?;
     let sig = state.engine.execute(plan).await.map_err(map_err)?;
     Ok(Json(TradeResponse { success: true, signature: Some(sig), error: None }))
+}
+
+#[derive(Deserialize)]
+struct CancelRequest { token_mint: String }
+
+async fn cancel(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    Json(req): Json<CancelRequest>,
+) -> Result<Json<TradeResponse>, (StatusCode, Json<TradeResponse>)> {
+    let cancelled = state.engine.cancel_trade(&req.token_mint).await;
+    if cancelled {
+        Ok(Json(TradeResponse { success: true, signature: None, error: None }))
+    } else {
+        Err((StatusCode::NOT_FOUND, Json(TradeResponse {
+            success: false, signature: None,
+            error: Some("No active trade found for this token".to_string()),
+        })))
+    }
 }
 
 #[derive(Deserialize)]
@@ -242,26 +285,35 @@ async fn memo_fast(
     Json(req): Json<MemoRequest>,
 ) -> Result<Json<TradeResponse>, (StatusCode, Json<TradeResponse>)> {
     let ix = solana_sdk::instruction::Instruction {
-        program_id: std::str::FromStr::from_str("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr").unwrap(),
+        program_id: "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr".parse().unwrap(),
         accounts: vec![],
         data: req.memo.into_bytes(),
     };
-    
     let plan = common::types::TradePlan {
-        launchpad: common::types::Launchpad::PumpFun, // Placeholder
+        launchpad: common::types::Launchpad::PumpFun,
         instructions: vec![ix],
-        signer_pubkey: std::str::FromStr::from_str(&state.defaults.default_signer).unwrap_or_else(|_| solana_sdk::pubkey::Pubkey::new_unique()),
+        signer_pubkey: state.defaults.default_signer.parse().unwrap_or_else(|_| Pubkey::new_unique()),
         simulate: false,
     };
-    
     let sig = state.engine.execute(plan).await.map_err(map_err)?;
     Ok(Json(TradeResponse { success: true, signature: Some(sig), error: None }))
+}
+
+// ── Error Mapping ────────────────────────────────────────────────────────────
+
+fn bad_request(msg: &str) -> (StatusCode, Json<TradeResponse>) {
+    (StatusCode::BAD_REQUEST, Json(TradeResponse {
+        success: false, signature: None, error: Some(msg.to_string()),
+    }))
 }
 
 fn map_err(e: EngineError) -> (StatusCode, Json<TradeResponse>) {
     let (code, msg) = match &e {
         EngineError::BadRequest(_) => (StatusCode::BAD_REQUEST, e.to_string()),
         EngineError::NotImplemented(_) => (StatusCode::NOT_IMPLEMENTED, e.to_string()),
+        EngineError::Confirmation(_) => (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()),
+        EngineError::Timeout(_) => (StatusCode::GATEWAY_TIMEOUT, e.to_string()),
+        EngineError::Cancelled(_) => (StatusCode::from_u16(499).unwrap_or(StatusCode::BAD_REQUEST), e.to_string()),
         _ => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     };
     (code, Json(TradeResponse { success: false, signature: None, error: Some(msg) }))

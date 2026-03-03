@@ -43,7 +43,9 @@ export class PositionManager {
     }
 
     public async monitorPositions(sellCallback: (mint: PublicKey, amount: bigint) => Promise<void>) {
-        console.log(`[Position] Monitoring ${this.positions.size} active positions...`);
+        if (this.positions.size > 0) {
+            console.log(`[Position] Monitoring ${this.positions.size} active positions...`);
+        }
 
         for (const [mintStr, pos] of this.positions.entries()) {
             try {

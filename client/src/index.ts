@@ -1,4 +1,4 @@
-import { Connection, Keypair, PublicKey, LAMPORTS_PER_SOL, TransactionInstruction } from '@solana/web3.js';
+import { Connection, Keypair, PublicKey, LAMPORTS_PER_SOL, TransactionInstruction, SystemProgram } from '@solana/web3.js';
 import { createAssociatedTokenAccountIdempotentInstruction } from '@solana/spl-token';
 import { ConnectionManager } from './engine/connection';
 import { JitoClient } from './engine/jito';
@@ -195,6 +195,16 @@ async function buyToken(connection: Connection, wallet: Keypair, jito: JitoClien
         // Slippage: 15%
         const maxSolCost = BigInt(Math.floor(Number(amountLamports) * 1.15));
 
+        let creator = SystemProgram.programId;
+        try {
+            const curveInfo = await connection.getAccountInfo(bondingCurve);
+            if (curveInfo && curveInfo.data.length >= 81) {
+                creator = new PublicKey(curveInfo.data.subarray(49, 81));
+            }
+        } catch (e) {
+            console.warn("Could not fetch creator info, using fallback.");
+        }
+
         const ix = PumpFunStrategy.createBuyInstruction(
             wallet.publicKey,
             mint,
@@ -202,7 +212,8 @@ async function buyToken(connection: Connection, wallet: Keypair, jito: JitoClien
             associatedBondingCurve,
             userATA,
             amountLamports,
-            maxSolCost
+            maxSolCost,
+            creator
         );
 
         const createAtaIx = createAssociatedTokenAccountIdempotentInstruction(
@@ -263,6 +274,16 @@ async function executeSell(connection: Connection, wallet: Keypair, jito: JitoCl
         console.log(`Selling ${amount.toString()} units of ${mint.toBase58()}...`);
         const { bondingCurve, associatedBondingCurve, userATA } = getDerivedAccounts(mint, wallet.publicKey);
 
+        let creator = SystemProgram.programId;
+        try {
+            const curveInfo = await connection.getAccountInfo(bondingCurve);
+            if (curveInfo && curveInfo.data.length >= 81) {
+                creator = new PublicKey(curveInfo.data.subarray(49, 81));
+            }
+        } catch (e) {
+            console.warn("Could not fetch creator info, using fallback.");
+        }
+
         const ix = PumpFunStrategy.createSellInstruction(
             wallet.publicKey,
             mint,
@@ -270,7 +291,8 @@ async function executeSell(connection: Connection, wallet: Keypair, jito: JitoCl
             associatedBondingCurve,
             userATA,
             amount,
-            BigInt(0) // Min SOL output
+            BigInt(0), // Min SOL output
+            creator
         );
 
         await executeTransaction(connection, wallet, jito, [ix]);
