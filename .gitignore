@@ -5,3 +5,5 @@
 **/*.log
 **/.env
 **/config/config.toml
+your_private_key.json
+.env
